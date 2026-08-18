@@ -40,11 +40,17 @@ function messageText() {
  * @returns {string|null}
  */
 function monthlyTotalText(label) {
+  // 列順の変更に強いよう、ヘッダから「月合計」列のインデックスを求めて参照する。
+  const heads = Array.from(
+    document.querySelectorAll('#summary .summary-table thead th'),
+  ).map((th) => th.textContent || '');
+  const colIndex = heads.indexOf('月合計');
+  if (colIndex < 0) return null;
   const rows = document.querySelectorAll('#summary .summary-table tbody tr');
   for (const tr of Array.from(rows)) {
     const tds = tr.querySelectorAll('td');
-    if (tds.length >= 2 && (tds[0].textContent || '') === label) {
-      return tds[1].textContent;
+    if (tds.length > colIndex && (tds[0].textContent || '') === label) {
+      return tds[colIndex].textContent;
     }
   }
   return null;

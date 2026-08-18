@@ -349,12 +349,15 @@ export function createUI(options = {}) {
   /** @type {any} */ let elPace = null;
   /** @type {any} */ let elViewMain = null;
   /** @type {any} */ let elViewInput = null;
+  /** @type {any} */ let elMainStats = null;
   /** @type {any} */ let elTabMain = null;
   /** @type {any} */ let elTabInput = null;
   /** @type {'main'|'input'} 現在表示中の画面。 */
   let currentView = 'main';
   /** @type {number} 入力画面で表示中の月（1〜12）。既定は基準日の月。 */
   let selectedInputMonth = Number(state.referenceDate.slice(5, 7)) || 4;
+  /** @type {Set<string>} 利用者が非表示にした警告メッセージの集合（表示制御・メモリ保持）。 */
+  const dismissedWarnings = new Set();
 
   /**
    * 要素を生成する小さなヘルパ。attrs は属性、text は textContent。
@@ -467,14 +470,11 @@ export function createUI(options = {}) {
     elMessage = el('div', { class: 'message', id: 'message', role: 'status' });
     root.appendChild(elMessage);
 
-    // --- メイン画面: 集計CSV出力 → ペース配分 → 警告 → 集計表。---
+    // --- メイン画面: 年度統計 → ペース配分 → 警告 → 集計表 →（下部）集計CSV出力。---
     elViewMain = el('section', { class: 'view view-main', id: 'view-main', role: 'tabpanel' });
 
-    const mainActions = el('div', { class: 'view-actions' });
-    const exportSummaryBtn = el('button', { type: 'button', id: 'export-summary' }, '集計CSV出力');
-    exportSummaryBtn.addEventListener('click', () => handleExportSummary());
-    mainActions.appendChild(exportSummaryBtn);
-    elViewMain.appendChild(mainActions);
+    elMainStats = el('section', { class: 'main-stats', id: 'main-stats' });
+    elViewMain.appendChild(elMainStats);
 
     elPace = el('section', { class: 'pace', id: 'pace' });
     elViewMain.appendChild(elPace);
@@ -485,12 +485,21 @@ export function createUI(options = {}) {
     elSummary = el('section', { class: 'summary', id: 'summary' });
     elViewMain.appendChild(elSummary);
 
+    const mainActions = el('div', { class: 'view-actions view-actions-bottom' });
+    const exportSummaryBtn = el('button', { type: 'button', id: 'export-summary' }, '集計CSV出力');
+    exportSummaryBtn.addEventListener('click', () => handleExportSummary());
+    mainActions.appendChild(exportSummaryBtn);
+    elViewMain.appendChild(mainActions);
+
     root.appendChild(elViewMain);
 
-    // --- 入力画面: CSV取込・入力CSV出力 → 日次入力グリッド。---
+    // --- 入力画面: 日次入力グリッド →（下部）CSV取込・入力CSV出力。---
     elViewInput = el('section', { class: 'view view-input', id: 'view-input', role: 'tabpanel' });
 
-    const inputActions = el('div', { class: 'view-actions' });
+    elGrid = el('section', { class: 'grid', id: 'grid' });
+    elViewInput.appendChild(elGrid);
+
+    const inputActions = el('div', { class: 'view-actions view-actions-bottom' });
     const importLabel = el('label', { class: 'button', for: 'csv-import' }, 'CSV 取込');
     const importInput = el('input', { type: 'file', id: 'csv-import', accept: '.csv,text/csv' });
     importInput.style.display = 'none';
@@ -505,9 +514,6 @@ export function createUI(options = {}) {
     exportInputBtn.addEventListener('click', () => handleExportInput());
     inputActions.appendChild(exportInputBtn);
     elViewInput.appendChild(inputActions);
-
-    elGrid = el('section', { class: 'grid', id: 'grid' });
-    elViewInput.appendChild(elGrid);
 
     root.appendChild(elViewInput);
 
@@ -675,6 +681,8 @@ export function createUI(options = {}) {
     );
     elGrid.appendChild(monthTitle);
 
+    const excluded = computeExcludedSet(state);
+
     const table = el('table', { class: 'grid-table' });
     const thead = el('thead');
     const headRow = el('tr');
@@ -684,11 +692,27 @@ export function createUI(options = {}) {
     thead.appendChild(headRow);
     table.appendChild(thead);
 
+    let sumActual = 0;
+    let sumPredicted = 0;
     const tbody = el('tbody');
     for (const entry of monthEntries) {
-      tbody.appendChild(buildGridRow(entry));
+      tbody.appendChild(buildGridRow(entry, excluded));
+      if (typeof entry.actualHours === 'number') sumActual += entry.actualHours;
+      if (typeof entry.predictedHours === 'number') sumPredicted += entry.predictedHours;
     }
     table.appendChild(tbody);
+
+    // 合計行（実績・予測の月合計）。
+    const tfoot = el('tfoot');
+    const totalRow = el('tr', { class: 'total-row' });
+    totalRow.appendChild(el('td', {}, '合計'));
+    totalRow.appendChild(el('td', {}, ''));
+    totalRow.appendChild(el('td', {}, fmtHours(roundToTenth(sumActual))));
+    totalRow.appendChild(el('td', {}, fmtHours(roundToTenth(sumPredicted))));
+    totalRow.appendChild(el('td', {}, ''));
+    tfoot.appendChild(totalRow);
+    table.appendChild(tfoot);
+
     elGrid.appendChild(table);
   }
 
@@ -742,11 +766,16 @@ export function createUI(options = {}) {
 
   /**
    * 1日分の入力行を構築する。実績・予測・備考の各入力に検証付きのイベントを登録する。
+   * 土日・除外日（祝日・有休）の行には off-day クラスを付す。
    * @param {DailyEntry} entry
+   * @param {Set<DateISO>} [excluded] 除外日集合（祝日・有休）
    * @returns {any}
    */
-  function buildGridRow(entry) {
+  function buildGridRow(entry, excluded) {
+    const isWeekend = entry.weekday === '土' || entry.weekday === '日';
+    const isHoliday = excluded ? excluded.has(entry.date) : false;
     const tr = el('tr', { dataset: { date: entry.date } });
+    if (isWeekend || isHoliday) tr.className = 'off-day';
     tr.appendChild(el('td', {}, isoToSlash(entry.date)));
     tr.appendChild(el('td', {}, entry.weekday));
 
@@ -978,6 +1007,7 @@ export function createUI(options = {}) {
     const excluded = computeExcludedSet(state);
     const summary = buildSummaryModel(entries, startYear, refDate, excluded);
 
+    renderMainStats(computeYearStats(entries, startYear, refDate, excluded));
     renderSummary(summary);
 
     const cutoffYearTotal = computeCutoffYearTotal(entries, startYear, refDate);
@@ -1007,44 +1037,115 @@ export function createUI(options = {}) {
     const headRow = el('tr');
     for (const h of [
       '月',
-      '月合計',
-      '月経過率',
+      '21日締め経過率',
       '21日締め(実績)',
       '21日締め(予測)',
       '営業日数',
       '残営業日数',
-      '21日締め経過率',
+      '月合計',
+      '月経過率',
     ]) {
       headRow.appendChild(el('th', {}, h));
     }
     thead.appendChild(headRow);
     table.appendChild(thead);
 
+    let sumMonthly = 0;
+    let sumCutoffActual = 0;
+    let sumCutoffPredicted = 0;
+
     const tbody = el('tbody');
     for (const row of summary.rows) {
       const tr = el('tr');
       tr.appendChild(el('td', {}, MONTH_LABELS[row.month - 1]));
-      tr.appendChild(el('td', {}, fmtHours(row.monthlyTotal)));
-      tr.appendChild(el('td', {}, fmtRate(row.monthProgressRate)));
+      tr.appendChild(el('td', {}, fmtRate(row.cutoffProgressRate)));
       tr.appendChild(el('td', {}, fmtHours(row.cutoffActual)));
       tr.appendChild(el('td', {}, fmtHours(row.cutoffPredicted)));
       tr.appendChild(el('td', {}, String(row.businessDays)));
       tr.appendChild(el('td', {}, String(row.remainingBusinessDays)));
-      tr.appendChild(el('td', {}, fmtRate(row.cutoffProgressRate)));
+      tr.appendChild(el('td', {}, fmtHours(row.monthlyTotal)));
+      tr.appendChild(el('td', {}, fmtRate(row.monthProgressRate)));
       tbody.appendChild(tr);
+      sumMonthly += row.monthlyTotal;
+      sumCutoffActual += row.cutoffActual;
+      sumCutoffPredicted += row.cutoffPredicted;
     }
     table.appendChild(tbody);
-    elSummary.appendChild(table);
 
-    // 年間合計（要件8.3）。
-    const annual = el('div', { class: 'annual-total' });
-    annual.appendChild(
-      el('span', {}, `年間実績合計: ${fmtHours(summary.annualActualTotal)} 時間`),
-    );
-    annual.appendChild(
-      el('span', {}, `年間予測合計: ${fmtHours(summary.annualPredictedTotal)} 時間`),
-    );
-    elSummary.appendChild(annual);
+    // 合計行（月合計・21日締め実績・21日締め予測の合計）。
+    const tfoot = el('tfoot');
+    const totalRow = el('tr', { class: 'total-row' });
+    totalRow.appendChild(el('td', {}, '合計'));
+    totalRow.appendChild(el('td', {}, '')); // 21日締め経過率
+    totalRow.appendChild(el('td', {}, fmtHours(roundToTenth(sumCutoffActual))));
+    totalRow.appendChild(el('td', {}, fmtHours(roundToTenth(sumCutoffPredicted))));
+    totalRow.appendChild(el('td', {}, '')); // 営業日数
+    totalRow.appendChild(el('td', {}, '')); // 残営業日数
+    totalRow.appendChild(el('td', {}, fmtHours(roundToTenth(sumMonthly))));
+    totalRow.appendChild(el('td', {}, '')); // 月経過率
+    tfoot.appendChild(totalRow);
+    table.appendChild(tfoot);
+
+    elSummary.appendChild(table);
+  }
+
+  /**
+   * 年度単位の統計（経過/残営業日数・1日平均・年間予測）を算出する。
+   * 対象期間は年度（4/1〜翌3/31）。「これまでの残業時間」は基準日以前の実績合計。
+   * @param {DailyEntry[]} entries
+   * @param {number} startYear
+   * @param {DateISO} refDate
+   * @param {Set<DateISO>} excluded
+   * @returns {{ totalBiz: number, elapsedBiz: number, remainingBiz: number, elapsedActual: number, dailyAvg: number, projectedAnnual: number }}
+   */
+  function computeYearStats(entries, startYear, refDate, excluded) {
+    const yearStart = `${pad4(startYear)}-04-01`;
+    const yearEnd = `${pad4(startYear + 1)}-03-31`;
+    const totalBiz = businessDays(yearStart, yearEnd, excluded);
+    const remainingBiz = remainingBusinessDays(yearStart, yearEnd, refDate, excluded);
+    const elapsedBiz = Math.max(0, totalBiz - remainingBiz);
+
+    let elapsedActual = 0;
+    for (const e of entries) {
+      if (
+        e.date >= yearStart &&
+        e.date <= yearEnd &&
+        e.date <= refDate &&
+        typeof e.actualHours === 'number'
+      ) {
+        elapsedActual += e.actualHours;
+      }
+    }
+    elapsedActual = roundToTenth(elapsedActual);
+    const dailyAvg = elapsedBiz > 0 ? roundToTenth(elapsedActual / elapsedBiz) : 0;
+    const projectedAnnual = roundToTenth(dailyAvg * totalBiz);
+    return { totalBiz, elapsedBiz, remainingBiz, elapsedActual, dailyAvg, projectedAnnual };
+  }
+
+  /**
+   * 年度統計をカード形式で描画する（経過営業日数・残営業日数・1日平均・年間予測）。
+   * @param {{ totalBiz: number, elapsedBiz: number, remainingBiz: number, elapsedActual: number, dailyAvg: number, projectedAnnual: number }} s
+   * @returns {void}
+   */
+  function renderMainStats(s) {
+    if (!elMainStats) return;
+    elMainStats.textContent = '';
+    elMainStats.appendChild(el('h2', {}, '年度サマリー'));
+
+    const grid = el('div', { class: 'stats-grid' });
+    /** @param {string} label @param {string} value */
+    const card = (label, value) => {
+      const c = el('div', { class: 'stat-card' });
+      c.appendChild(el('div', { class: 'stat-label' }, label));
+      c.appendChild(el('div', { class: 'stat-value' }, value));
+      return c;
+    };
+    grid.appendChild(card('経過営業日数', `${s.elapsedBiz} 日`));
+    grid.appendChild(card('残りの営業日数', `${s.remainingBiz} 日`));
+    grid.appendChild(card('これまでの残業（実績）', `${fmtHours(s.elapsedActual)} 時間`));
+    grid.appendChild(card('1日あたり残業平均', `${fmtHours(s.dailyAvg)} 時間 / 営業日`));
+    grid.appendChild(card('このペースの年間予測', `${fmtHours(s.projectedAnnual)} 時間`));
+    elMainStats.appendChild(grid);
   }
 
   /**
@@ -1057,18 +1158,49 @@ export function createUI(options = {}) {
     elWarnings.textContent = '';
     elWarnings.appendChild(el('h2', {}, '警告'));
 
-    if (!warnings || warnings.length === 0) {
+    const all = warnings || [];
+    if (all.length === 0) {
       elWarnings.appendChild(el('p', { class: 'no-warnings' }, '現在、上限ルールに関する警告はありません。'));
       return;
     }
-    const severe = new Set(['OVER_69', 'CUTOFF_YEAR_690']);
-    const ul = el('ul', { class: 'warning-list' });
-    for (const w of warnings) {
-      const li = el('li', { class: severe.has(w.code) ? 'warning severe' : 'warning' }, w.message);
-      li.dataset.code = w.code;
-      ul.appendChild(li);
+
+    const visible = all.filter((w) => !dismissedWarnings.has(w.message));
+    const hiddenCount = all.length - visible.length;
+
+    if (visible.length === 0) {
+      elWarnings.appendChild(
+        el('p', { class: 'no-warnings' }, `表示中の警告はありません（${hiddenCount}件を非表示中）。`),
+      );
+    } else {
+      const severe = new Set(['OVER_69', 'CUTOFF_YEAR_690']);
+      const ul = el('ul', { class: 'warning-list' });
+      for (const w of visible) {
+        const li = el('li', { class: severe.has(w.code) ? 'warning severe' : 'warning' });
+        li.dataset.code = w.code;
+        li.appendChild(el('span', { class: 'warning-text' }, w.message));
+        const hideBtn = el('button', { type: 'button', class: 'warning-hide', title: 'この警告を非表示' }, '×');
+        hideBtn.addEventListener('click', () => {
+          dismissedWarnings.add(w.message);
+          renderAll();
+        });
+        li.appendChild(hideBtn);
+        ul.appendChild(li);
+      }
+      elWarnings.appendChild(ul);
     }
-    elWarnings.appendChild(ul);
+
+    if (hiddenCount > 0) {
+      const showBtn = el(
+        'button',
+        { type: 'button', class: 'warning-show-all' },
+        `非表示の警告 ${hiddenCount}件を再表示`,
+      );
+      showBtn.addEventListener('click', () => {
+        dismissedWarnings.clear();
+        renderAll();
+      });
+      elWarnings.appendChild(showBtn);
+    }
   }
 
   /**
