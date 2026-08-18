@@ -177,6 +177,16 @@ button:hover,
   color: var(--accent);
 }
 
+/* --- 集計表は少し大きめの文字に --- */
+.summary-table {
+  font-size: 1.02rem;
+}
+
+.summary-table th,
+.summary-table td {
+  padding: 0.5rem 0.6rem;
+}
+
 /* --- 合計行 --- */
 .total-row td {
   font-weight: 700;

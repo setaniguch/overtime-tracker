@@ -417,6 +417,69 @@ export function createUI(options = {}) {
     return fy ? fy.entries : [];
   }
 
+  /**
+   * 全年度の日次エントリを平坦化して返す。締め期間（前月21日〜当月20日）が年度境界を
+   * またぐ場合（例: 4月の締めは前年度の3/21〜3/31を含む）でも正しく集計できるよう、
+   * 集計・警告・統計は選択年度単体ではなく全エントリ横断で行う。
+   * @returns {DailyEntry[]}
+   */
+  function allEntries() {
+    /** @type {DailyEntry[]} */
+    const out = [];
+    for (const fy of state.fiscalYears) {
+      for (const e of fy.entries) out.push(e);
+    }
+    return out;
+  }
+
+  /**
+   * "YYYY-MM-DD" の開始日〜終了日（両端含む）の日付列を昇順で返す。
+   * @param {DateISO} startISO
+   * @param {DateISO} endISO
+   * @returns {DateISO[]}
+   */
+  function datesInRange(startISO, endISO) {
+    /** @type {DateISO[]} */
+    const dates = [];
+    const s = Date.UTC(+startISO.slice(0, 4), +startISO.slice(5, 7) - 1, +startISO.slice(8, 10));
+    const e = Date.UTC(+endISO.slice(0, 4), +endISO.slice(5, 7) - 1, +endISO.slice(8, 10));
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    for (let t = s; t <= e; t += DAY_MS) {
+      const d = new Date(t);
+      dates.push(`${pad4(d.getUTCFullYear())}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`);
+    }
+    return dates;
+  }
+
+  /**
+   * 指定日の日次エントリを全年度から取得する。存在しない場合は、その日付が属する年度を
+   * 必要に応じて生成してエントリを作成し、実体（保存対象）への参照を返す。締め期間表示で
+   * 年度境界をまたぐ日（例: 4月表示の3/21〜3/31）も編集・保存できるようにするため。
+   * @param {DateISO} dateISO
+   * @returns {DailyEntry}
+   */
+  function getOrCreateEntry(dateISO) {
+    const sy = fiscalYearOfDate(dateISO);
+    let fy = getFiscalYear(state, sy);
+    if (!fy) {
+      fy = createEmptyFiscalYear(sy);
+      state.fiscalYears.push(fy);
+    }
+    let entry = fy.entries.find((e) => e.date === dateISO);
+    if (!entry) {
+      entry = {
+        date: dateISO,
+        weekday: weekdayOf(dateISO),
+        actualHours: null,
+        predictedHours: null,
+        note: '',
+      };
+      fy.entries.push(entry);
+      fy.entries.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    }
+    return entry;
+  }
+
   // ------------------------------------------------------------------------
   // 骨格描画（mount）。
   // ------------------------------------------------------------------------
@@ -668,18 +731,20 @@ export function createUI(options = {}) {
     // 選択中の月に属する暦年（4〜12月は開始年、1〜3月は翌年）。
     const targetYear =
       selectedInputMonth >= 4 ? state.selectedStartYear : state.selectedStartYear + 1;
-    const monthEntries = fy.entries.filter(
-      (e) =>
-        Number(e.date.slice(0, 4)) === targetYear &&
-        Number(e.date.slice(5, 7)) === selectedInputMonth,
-    );
+    // 20日締め・21日開始: 表示範囲は締め期間（前月21日〜当月20日）。
+    // 例: 4月を選ぶと 3/21〜4/20 を表示する。
+    const cp = cutoffPeriod(targetYear, selectedInputMonth);
+    const monthEntries = datesInRange(cp.start, cp.end).map((d) => getOrCreateEntry(d));
 
     const monthTitle = el(
       'h3',
       { class: 'grid-month-title' },
-      `${targetYear}年 ${MONTH_LABELS[selectedInputMonth - 1]}`,
+      `${targetYear}年 ${MONTH_LABELS[selectedInputMonth - 1]}分（${isoToSlash(cp.start)}〜${isoToSlash(cp.end)}）`,
     );
     elGrid.appendChild(monthTitle);
+
+    // 締め期間が前年度にまたがり新たな年度を生成した場合に備え、年度セレクタを更新する。
+    renderYearSelector();
 
     const excluded = computeExcludedSet(state);
 
@@ -973,7 +1038,7 @@ export function createUI(options = {}) {
       return;
     }
     const excluded = computeExcludedSet(state);
-    const summary = buildSummaryModel(currentEntries(), state.selectedStartYear, state.referenceDate, excluded);
+    const summary = buildSummaryModel(allEntries(), state.selectedStartYear, state.referenceDate, excluded);
     const csv = exportSummaryCsv(summary);
     try {
       fileIO.downloadCsv(SUMMARY_CSV_FILENAME, csv);
@@ -1001,7 +1066,8 @@ export function createUI(options = {}) {
    * @returns {void}
    */
   function renderAll() {
-    const entries = currentEntries();
+    // 締め期間が年度境界をまたぐため、集計・統計・警告は全年度横断のエントリで行う。
+    const entries = allEntries();
     const startYear = state.selectedStartYear;
     const refDate = state.referenceDate;
     const excluded = computeExcludedSet(state);
