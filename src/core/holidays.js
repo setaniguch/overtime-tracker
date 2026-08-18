@@ -134,6 +134,14 @@ export function japaneseHolidays(year) {
   }
 
   const result = new Set(base.keys());
+
+  // 会社の年末年始休（法定祝日ではないが必ず休み）。振替判定に影響しないよう最後に加える。
+  // 1/1 は元日として base に含まれる。
+  result.add(iso(year, 12, 30));
+  result.add(iso(year, 12, 31));
+  result.add(iso(year, 1, 2));
+  result.add(iso(year, 1, 3));
+
   cache.set(year, result);
   return result;
 }

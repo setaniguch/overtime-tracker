@@ -1247,6 +1247,7 @@ export function createUI(options = {}) {
       c.appendChild(el('div', { class: 'stat-value' }, value));
       return c;
     };
+    grid.appendChild(card('本日', isoToSlash(state.referenceDate)));
     grid.appendChild(card('経過営業日数', `${s.elapsedBiz} 日`));
     grid.appendChild(card('残りの営業日数', `${s.remainingBiz} 日`));
     grid.appendChild(card('1日あたり残業平均', `${s.dailyAvg.toFixed(2)} 時間 / 営業日`));

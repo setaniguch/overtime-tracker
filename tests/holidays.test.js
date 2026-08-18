@@ -35,6 +35,15 @@ describe('japaneseHolidays', () => {
     expect(h.has('2026-05-06')).toBe(true);
   });
 
+  it('年末年始（12/30,12/31,1/2,1/3）は必ず休み', () => {
+    const h = japaneseHolidays(2026);
+    expect(h.has('2026-12-30')).toBe(true);
+    expect(h.has('2026-12-31')).toBe(true);
+    expect(h.has('2026-01-02')).toBe(true);
+    expect(h.has('2026-01-03')).toBe(true);
+    expect(h.has('2026-01-01')).toBe(true); // 元日
+  });
+
   it('範囲指定で複数年をまとめて返す', () => {
     const h = japaneseHolidaysBetween(2025, 2026);
     expect(h.has('2025-01-01')).toBe(true);
