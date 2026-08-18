@@ -187,6 +187,12 @@ button:hover,
   padding: 0.5rem 0.6rem;
 }
 
+/* --- 21日締めが40時間超のセルは赤字 --- */
+.summary-table td.over-40 {
+  color: var(--danger);
+  font-weight: 700;
+}
+
 /* --- 合計行 --- */
 .total-row td {
   font-weight: 700;

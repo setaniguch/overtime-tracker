@@ -43,9 +43,9 @@ import { allCutoffTotals } from '../core/cutoffAggregator.js';
 import { businessDays, remainingBusinessDays } from '../core/businessDayCalculator.js';
 import { progressRate } from '../core/progressCalculator.js';
 import { evaluateCompliance } from '../core/complianceChecker.js';
-import { computePacePlan } from '../core/pacePlanner.js';
 import { importInputCsv } from '../core/csvImporter.js';
 import { exportInputCsv, exportSummaryCsv } from '../core/csvExporter.js';
+import { japaneseHolidaysBetween } from '../core/holidays.js';
 
 /**
  * @typedef {import('../core/types.js').AppState} AppState
@@ -183,6 +183,12 @@ export function computeExcludedSet(state) {
       }
     }
   }
+  // 日本の祝日を除外日に加える（要件7.5）。対象年は作成済み年度と選択年度から算出する。
+  const years = [state.selectedStartYear];
+  for (const fy of state.fiscalYears) years.push(fy.startYear);
+  const minYear = Math.min(...years);
+  const maxYear = Math.max(...years) + 1; // 年度は翌暦年3月まで及ぶため +1。
+  for (const d of japaneseHolidaysBetween(minYear, maxYear)) set.add(d);
   return set;
 }
 
@@ -1085,8 +1091,43 @@ export function createUI(options = {}) {
     const warnings = evaluateCompliance(complianceTotals, cutoffYearTotal);
     renderWarnings(warnings);
 
-    const plan = computePacePlan(entries, startYear, refDate, state.annualCap);
-    renderPace(plan);
+    // 残余残業予算 = 年間上限 − 21日締め(実績)合計。月あたり配分は経過月数で割る。
+    const cutoffActualSum = roundToTenth(summary.rows.reduce((a, r) => a + r.cutoffActual, 0));
+    const remainingBudget = roundToTenth(state.annualCap - cutoffActualSum);
+    const elapsedMonths = computeElapsedCutoffMonths(startYear, refDate);
+    const monthlyAllowance = elapsedMonths > 0 ? roundToTenth(remainingBudget / elapsedMonths) : 0;
+    renderPace({
+      annualCap: state.annualCap,
+      cutoffActualSum,
+      remainingBudget,
+      elapsedMonths,
+      monthlyAllowance,
+    });
+  }
+
+  /**
+   * 経過月数（締め基準）を算出する。締め月は 21 日を境界とし、基準日の日 >= 21 なら翌月を
+   * 「現在の締め月」とする。年度の4月を1とし、現在の締め月までの月数（含む）を返す。
+   * 例: 基準日 8/6 → 締め月8月 → 4〜8月で 5。基準日 8/21 → 締め月9月 → 4〜9月で 6。
+   * @param {number} startYear 年度開始年
+   * @param {DateISO} refDate 基準日
+   * @returns {number} 0〜12
+   */
+  function computeElapsedCutoffMonths(startYear, refDate) {
+    const y = +refDate.slice(0, 4);
+    const m = +refDate.slice(5, 7);
+    const d = +refDate.slice(8, 10);
+    let ccYear = y;
+    let ccMonth = m;
+    if (d >= 21) {
+      ccMonth += 1;
+      if (ccMonth > 12) {
+        ccMonth = 1;
+        ccYear += 1;
+      }
+    }
+    const idx = (ccYear - startYear) * 12 + (ccMonth - 4) + 1;
+    return Math.min(12, Math.max(0, idx));
   }
 
   /**
@@ -1126,8 +1167,12 @@ export function createUI(options = {}) {
       const tr = el('tr');
       tr.appendChild(el('td', {}, MONTH_LABELS[row.month - 1]));
       tr.appendChild(el('td', {}, fmtRate(row.cutoffProgressRate)));
-      tr.appendChild(el('td', {}, fmtHours(row.cutoffActual)));
-      tr.appendChild(el('td', {}, fmtHours(row.cutoffPredicted)));
+      const actualTd = el('td', {}, fmtHours(row.cutoffActual));
+      if (row.cutoffActual > 40) actualTd.className = 'over-40';
+      tr.appendChild(actualTd);
+      const predTd = el('td', {}, fmtHours(row.cutoffPredicted));
+      if (row.cutoffPredicted > 40) predTd.className = 'over-40';
+      tr.appendChild(predTd);
       tr.appendChild(el('td', {}, String(row.businessDays)));
       tr.appendChild(el('td', {}, String(row.remainingBusinessDays)));
       tr.appendChild(el('td', {}, fmtHours(row.monthlyTotal)));
@@ -1163,7 +1208,7 @@ export function createUI(options = {}) {
    * @param {number} startYear
    * @param {DateISO} refDate
    * @param {Set<DateISO>} excluded
-   * @returns {{ totalBiz: number, elapsedBiz: number, remainingBiz: number, elapsedActual: number, dailyAvg: number, projectedAnnual: number }}
+   * @returns {{ totalBiz: number, elapsedBiz: number, remainingBiz: number, cutoffActualSum: number, dailyAvg: number, projectedAnnual: number }}
    */
   function computeYearStats(entries, startYear, refDate, excluded) {
     const yearStart = `${pad4(startYear)}-04-01`;
@@ -1172,26 +1217,21 @@ export function createUI(options = {}) {
     const remainingBiz = remainingBusinessDays(yearStart, yearEnd, refDate, excluded);
     const elapsedBiz = Math.max(0, totalBiz - remainingBiz);
 
-    let elapsedActual = 0;
-    for (const e of entries) {
-      if (
-        e.date >= yearStart &&
-        e.date <= yearEnd &&
-        e.date <= refDate &&
-        typeof e.actualHours === 'number'
-      ) {
-        elapsedActual += e.actualHours;
-      }
-    }
-    elapsedActual = roundToTenth(elapsedActual);
-    const dailyAvg = elapsedBiz > 0 ? roundToTenth(elapsedActual / elapsedBiz) : 0;
+    // これまでの残業（実績）＝ 21日締め(実績)合計（集計表最下部の合計と一致させる）。
+    const cutoffs = allCutoffTotals(entries, startYear);
+    let cutoffActualSum = 0;
+    for (const c of cutoffs) cutoffActualSum += c.actualTotal;
+    cutoffActualSum = roundToTenth(cutoffActualSum);
+
+    // 1日あたり平均＝ これまでの実績 ÷ 経過営業日数（表示は小数第2位）。
+    const dailyAvg = elapsedBiz > 0 ? cutoffActualSum / elapsedBiz : 0;
     const projectedAnnual = roundToTenth(dailyAvg * totalBiz);
-    return { totalBiz, elapsedBiz, remainingBiz, elapsedActual, dailyAvg, projectedAnnual };
+    return { totalBiz, elapsedBiz, remainingBiz, cutoffActualSum, dailyAvg, projectedAnnual };
   }
 
   /**
    * 年度統計をカード形式で描画する（経過営業日数・残営業日数・1日平均・年間予測）。
-   * @param {{ totalBiz: number, elapsedBiz: number, remainingBiz: number, elapsedActual: number, dailyAvg: number, projectedAnnual: number }} s
+   * @param {{ totalBiz: number, elapsedBiz: number, remainingBiz: number, cutoffActualSum: number, dailyAvg: number, projectedAnnual: number }} s
    * @returns {void}
    */
   function renderMainStats(s) {
@@ -1209,8 +1249,7 @@ export function createUI(options = {}) {
     };
     grid.appendChild(card('経過営業日数', `${s.elapsedBiz} 日`));
     grid.appendChild(card('残りの営業日数', `${s.remainingBiz} 日`));
-    grid.appendChild(card('これまでの残業（実績）', `${fmtHours(s.elapsedActual)} 時間`));
-    grid.appendChild(card('1日あたり残業平均', `${fmtHours(s.dailyAvg)} 時間 / 営業日`));
+    grid.appendChild(card('1日あたり残業平均', `${s.dailyAvg.toFixed(2)} 時間 / 営業日`));
     grid.appendChild(card('このペースの年間予測', `${fmtHours(s.projectedAnnual)} 時間`));
     elMainStats.appendChild(grid);
   }
@@ -1275,32 +1314,41 @@ export function createUI(options = {}) {
    * @param {ReturnType<typeof computePacePlan>} plan
    * @returns {void}
    */
-  function renderPace(plan) {
+  function renderPace(p) {
     if (!elPace) return;
     elPace.textContent = '';
     elPace.appendChild(el('h2', {}, '残業ペース配分'));
-    elPace.appendChild(el('p', { class: 'annual-cap' }, `年間残業上限: ${fmtHours(state.annualCap)} 時間`));
+    elPace.appendChild(el('p', { class: 'annual-cap' }, `年間残業上限: ${fmtHours(p.annualCap)} 時間`));
 
-    if (plan.kind === 'year_ended') {
-      elPace.appendChild(el('p', { class: 'pace-ended' }, '年度が終了しており、配分対象月がありません。'));
-      return;
-    }
-    if (plan.kind === 'over_cap') {
-      elPace.appendChild(
-        el('p', { class: 'pace-over' }, `残余残業予算: ${fmtHours(plan.remainingBudget)} 時間`),
-      );
-      elPace.appendChild(el('p', { class: 'pace-over severe' }, '年間上限を既に超過しています。月あたり配分は0.0時間です。'));
-      return;
-    }
-    // normal
     const dl = el('dl', { class: 'pace-detail' });
+    dl.appendChild(el('dt', {}, '21日締め(実績)合計'));
+    dl.appendChild(el('dd', {}, `${fmtHours(p.cutoffActualSum)} 時間`));
     dl.appendChild(el('dt', {}, '残余残業予算'));
-    dl.appendChild(el('dd', {}, `${fmtHours(plan.remainingBudget)} 時間`));
-    dl.appendChild(el('dt', {}, '残り月数'));
-    dl.appendChild(el('dd', {}, `${plan.remainingMonths} か月`));
+    dl.appendChild(
+      el(
+        'dd',
+        p.remainingBudget < 0 ? { class: 'pace-over severe' } : {},
+        `${fmtHours(p.remainingBudget)} 時間`,
+      ),
+    );
+    dl.appendChild(el('dt', {}, '経過月数'));
+    dl.appendChild(el('dd', {}, `${p.elapsedMonths} か月`));
     dl.appendChild(el('dt', {}, '月あたり配分'));
-    dl.appendChild(el('dd', { class: 'pace-allowance' }, `${fmtHours(plan.monthlyAllowance)} 時間 / 月`));
+    dl.appendChild(
+      el(
+        'dd',
+        { class: 'pace-allowance' },
+        p.elapsedMonths > 0 ? `${fmtHours(p.monthlyAllowance)} 時間 / 月` : '—',
+      ),
+    );
     elPace.appendChild(dl);
+
+    if (p.remainingBudget < 0) {
+      elPace.appendChild(el('p', { class: 'pace-over severe' }, '年間上限を既に超過しています。'));
+    }
+    if (p.elapsedMonths === 0) {
+      elPace.appendChild(el('p', { class: 'pace-ended' }, '年度開始前のため月あたり配分を算出できません。'));
+    }
   }
 
   return {
