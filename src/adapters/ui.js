@@ -1011,11 +1011,12 @@ export function createUI(options = {}) {
     renderSummary(summary);
 
     const cutoffYearTotal = computeCutoffYearTotal(entries, startYear, refDate);
-    const monthlyTotals = summary.rows.map((r, i) => {
+    // 月45時間系の警告判定は「21日締め(実績)」を基準に評価する。
+    const complianceTotals = summary.rows.map((r, i) => {
       const ym = fiscalYearMonths(startYear)[i];
-      return { year: ym.year, month: ym.month, total: r.monthlyTotal };
+      return { year: ym.year, month: ym.month, total: r.cutoffActual };
     });
-    const warnings = evaluateCompliance(monthlyTotals, cutoffYearTotal);
+    const warnings = evaluateCompliance(complianceTotals, cutoffYearTotal);
     renderWarnings(warnings);
 
     const plan = computePacePlan(entries, startYear, refDate, state.annualCap);
