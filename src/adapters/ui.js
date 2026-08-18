@@ -757,7 +757,7 @@ export function createUI(options = {}) {
     const table = el('table', { class: 'grid-table' });
     const thead = el('thead');
     const headRow = el('tr');
-    for (const h of ['日付', '曜日', '実績', '予測', '備考']) {
+    for (const h of ['日付', '曜日', '実績', '予測', '備考', '休み']) {
       headRow.appendChild(el('th', {}, h));
     }
     thead.appendChild(headRow);
@@ -780,7 +780,8 @@ export function createUI(options = {}) {
     totalRow.appendChild(el('td', {}, ''));
     totalRow.appendChild(el('td', {}, fmtHours(roundToTenth(sumActual))));
     totalRow.appendChild(el('td', {}, fmtHours(roundToTenth(sumPredicted))));
-    totalRow.appendChild(el('td', {}, ''));
+    totalRow.appendChild(el('td', {}, '')); // 備考
+    totalRow.appendChild(el('td', {}, '')); // 休み
     tfoot.appendChild(totalRow);
     table.appendChild(tfoot);
 
@@ -881,7 +882,34 @@ export function createUI(options = {}) {
     noteTd.appendChild(noteInput);
     tr.appendChild(noteTd);
 
+    // 休み（自社独自の休み）。チェックで excludedDates に登録し、営業日から除外する。
+    const offTd = el('td', { class: 'off-cell' });
+    const offInput = el('input', { type: 'checkbox', class: 'off-check' });
+    offInput.checked = Array.isArray(state.excludedDates) && state.excludedDates.includes(entry.date);
+    offInput.addEventListener('change', () => handleOffDayToggle(entry.date, offInput.checked));
+    offTd.appendChild(offInput);
+    tr.appendChild(offTd);
+
     return tr;
+  }
+
+  /**
+   * 手動の休み（自社独自の休み）を切り替える。チェック時は state.excludedDates に日付を
+   * 追加、解除時は削除する。営業日数・経過率・集計・警告を再計算し、グリッドの背景色も更新する。
+   * @param {DateISO} dateISO
+   * @param {boolean} checked
+   * @returns {void}
+   */
+  function handleOffDayToggle(dateISO, checked) {
+    if (!Array.isArray(state.excludedDates)) state.excludedDates = [];
+    const idx = state.excludedDates.indexOf(dateISO);
+    if (checked && idx < 0) {
+      state.excludedDates.push(dateISO);
+    } else if (!checked && idx >= 0) {
+      state.excludedDates.splice(idx, 1);
+    }
+    renderGrid();
+    recompute();
   }
 
   /**
