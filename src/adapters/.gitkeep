@@ -1,0 +1,1 @@
+# アダプタ層（副作用あり）: dataStore.js, fileIO.js, ui.js を後続タスクで配置する。

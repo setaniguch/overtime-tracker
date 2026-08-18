@@ -1,0 +1,11 @@
+# 依存（実行には不要。テスト時のみローカルで npm install）
+node_modules/
+
+# 個人データを含む残業CSV（公開しない）
+谷さん_残業入力ール 1.csv
+谷さん_残業集計ツール 1.csv
+*.local.csv
+
+# OS / エディタ
+.DS_Store
+Thumbs.db

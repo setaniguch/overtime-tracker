@@ -1,0 +1,15 @@
+{
+  "name": "overtime-tracker",
+  "version": "0.1.0",
+  "description": "年度単位で日々の残業（実績・予測）を集計し上限ルールを警告する、ローカル動作アプリ",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest --run"
+  },
+  "devDependencies": {
+    "fast-check": "3.23.2",
+    "jsdom": "^29.1.1",
+    "vitest": "2.1.9"
+  }
+}
