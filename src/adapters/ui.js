@@ -236,8 +236,9 @@ export function buildSummaryModel(entries, startYear, referenceDate, excluded) {
       monthProgressRate: progressRate(monthStart, monthEnd, referenceDate, excluded),
       cutoffActual: cutoffs[i].actualTotal,
       cutoffPredicted: cutoffs[i].predictedTotal,
-      businessDays: businessDays(monthStart, monthEnd, excluded),
-      remainingBusinessDays: remainingBusinessDays(monthStart, monthEnd, referenceDate, excluded),
+      // 営業日数・残営業日数は締め期間（前月21日〜当月20日）ベースで算出する。
+      businessDays: businessDays(cp.start, cp.end, excluded),
+      remainingBusinessDays: remainingBusinessDays(cp.start, cp.end, referenceDate, excluded),
       cutoffProgressRate: progressRate(cp.start, cp.end, referenceDate, excluded),
     };
   });
@@ -356,6 +357,9 @@ export function createUI(options = {}) {
   /** @type {any} */ let elViewMain = null;
   /** @type {any} */ let elViewInput = null;
   /** @type {any} */ let elMainStats = null;
+  /** @type {any} 入力グリッド合計行の実績セル。 */ let elGridActualTotal = null;
+  /** @type {any} 入力グリッド合計行の予測セル。 */ let elGridPredictedTotal = null;
+  /** @type {DailyEntry[]} 現在入力グリッドに表示中のエントリ（合計の動的更新用）。 */ let gridMonthEntries = [];
   /** @type {any} */ let elTabMain = null;
   /** @type {any} */ let elTabInput = null;
   /** @type {'main'|'input'} 現在表示中の画面。 */
@@ -763,29 +767,46 @@ export function createUI(options = {}) {
     thead.appendChild(headRow);
     table.appendChild(thead);
 
-    let sumActual = 0;
-    let sumPredicted = 0;
+    gridMonthEntries = monthEntries;
     const tbody = el('tbody');
     for (const entry of monthEntries) {
       tbody.appendChild(buildGridRow(entry, excluded));
-      if (typeof entry.actualHours === 'number') sumActual += entry.actualHours;
-      if (typeof entry.predictedHours === 'number') sumPredicted += entry.predictedHours;
     }
     table.appendChild(tbody);
 
-    // 合計行（実績・予測の月合計）。
+    // 合計行（実績・予測の月合計）。入力変更時に updateInputTotals で動的更新する。
     const tfoot = el('tfoot');
     const totalRow = el('tr', { class: 'total-row' });
     totalRow.appendChild(el('td', {}, '合計'));
     totalRow.appendChild(el('td', {}, ''));
-    totalRow.appendChild(el('td', {}, fmtHours(roundToTenth(sumActual))));
-    totalRow.appendChild(el('td', {}, fmtHours(roundToTenth(sumPredicted))));
+    elGridActualTotal = el('td', {}, '');
+    elGridPredictedTotal = el('td', {}, '');
+    totalRow.appendChild(elGridActualTotal);
+    totalRow.appendChild(elGridPredictedTotal);
     totalRow.appendChild(el('td', {}, '')); // 備考
     totalRow.appendChild(el('td', {}, '')); // 休み
     tfoot.appendChild(totalRow);
     table.appendChild(tfoot);
 
     elGrid.appendChild(table);
+    updateInputTotals();
+  }
+
+  /**
+   * 入力グリッドの合計行（実績・予測）を、現在表示中のエントリから再計算して更新する。
+   * 実績/予測の入力変更時に呼び出し、全体を再描画せずに合計だけを動的更新する。
+   * @returns {void}
+   */
+  function updateInputTotals() {
+    if (!elGridActualTotal || !elGridPredictedTotal) return;
+    let a = 0;
+    let p = 0;
+    for (const e of gridMonthEntries) {
+      if (typeof e.actualHours === 'number') a += e.actualHours;
+      if (typeof e.predictedHours === 'number') p += e.predictedHours;
+    }
+    elGridActualTotal.textContent = fmtHours(roundToTenth(a));
+    elGridPredictedTotal.textContent = fmtHours(roundToTenth(p));
   }
 
   /**
@@ -928,6 +949,7 @@ export function createUI(options = {}) {
       entry[field] = null;
       input.value = '';
       clearMessage();
+      updateInputTotals();
       recompute();
       return;
     }
@@ -936,6 +958,7 @@ export function createUI(options = {}) {
       entry[field] = result.value;
       input.value = fmtHours(result.value);
       clearMessage();
+      updateInputTotals();
       recompute();
       return;
     }
@@ -1173,9 +1196,9 @@ export function createUI(options = {}) {
     const headRow = el('tr');
     for (const h of [
       '月',
-      '21日締め経過率',
-      '21日締め(実績)',
-      '21日締め(予測)',
+      '20日締め経過率',
+      '20日締め(実績)',
+      '20日締め(予測)',
       '営業日数',
       '残営業日数',
       '月合計',
@@ -1254,12 +1277,26 @@ export function createUI(options = {}) {
     // 1日あたり平均＝ これまでの実績 ÷ 経過営業日数（表示は小数第2位）。
     const dailyAvg = elapsedBiz > 0 ? cutoffActualSum / elapsedBiz : 0;
     const projectedAnnual = roundToTenth(dailyAvg * totalBiz);
-    return { totalBiz, elapsedBiz, remainingBiz, cutoffActualSum, dailyAvg, projectedAnnual };
+
+    // 年間の総日数・休日数（休日 = 総日数 − 営業日数。土日・祝日・年末年始・自社休を含む）。
+    const totalDays = fiscalYearDates(startYear).length;
+    const offDays = totalDays - totalBiz;
+
+    return {
+      totalBiz,
+      elapsedBiz,
+      remainingBiz,
+      cutoffActualSum,
+      dailyAvg,
+      projectedAnnual,
+      totalDays,
+      offDays,
+    };
   }
 
   /**
    * 年度統計をカード形式で描画する（経過営業日数・残営業日数・1日平均・年間予測）。
-   * @param {{ totalBiz: number, elapsedBiz: number, remainingBiz: number, cutoffActualSum: number, dailyAvg: number, projectedAnnual: number }} s
+   * @param {{ totalBiz: number, elapsedBiz: number, remainingBiz: number, cutoffActualSum: number, dailyAvg: number, projectedAnnual: number, totalDays: number, offDays: number }} s
    * @returns {void}
    */
   function renderMainStats(s) {
@@ -1276,6 +1313,8 @@ export function createUI(options = {}) {
       return c;
     };
     grid.appendChild(card('本日', isoToSlash(state.referenceDate)));
+    grid.appendChild(card('年間営業日数', `${s.totalBiz} 日`));
+    grid.appendChild(card('年間休日数', `${s.offDays} 日`));
     grid.appendChild(card('経過営業日数', `${s.elapsedBiz} 日`));
     grid.appendChild(card('残りの営業日数', `${s.remainingBiz} 日`));
     grid.appendChild(card('1日あたり残業平均', `${s.dailyAvg.toFixed(2)} 時間 / 営業日`));
@@ -1350,7 +1389,7 @@ export function createUI(options = {}) {
     elPace.appendChild(el('p', { class: 'annual-cap' }, `年間残業上限: ${fmtHours(p.annualCap)} 時間`));
 
     const dl = el('dl', { class: 'pace-detail' });
-    dl.appendChild(el('dt', {}, '21日締め(実績)合計'));
+    dl.appendChild(el('dt', {}, '20日締め(実績)合計'));
     dl.appendChild(el('dd', {}, `${fmtHours(p.cutoffActualSum)} 時間`));
     dl.appendChild(el('dt', {}, '残余残業予算'));
     dl.appendChild(
