@@ -1130,7 +1130,8 @@ export function createUI(options = {}) {
     const excluded = computeExcludedSet(state);
     const summary = buildSummaryModel(entries, startYear, refDate, excluded);
 
-    renderMainStats(computeYearStats(entries, startYear, refDate, excluded));
+    const stats = computeYearStats(entries, startYear, refDate, excluded);
+    renderMainStats(stats);
     renderSummary(summary);
 
     const cutoffYearTotal = computeCutoffYearTotal(entries, startYear, refDate);
@@ -1142,17 +1143,20 @@ export function createUI(options = {}) {
     const warnings = evaluateCompliance(complianceTotals, cutoffYearTotal);
     renderWarnings(warnings);
 
-    // 残余残業予算 = 年間上限 − 21日締め(実績)合計。月あたり配分は経過月数で割る。
-    const cutoffActualSum = roundToTenth(summary.rows.reduce((a, r) => a + r.cutoffActual, 0));
+    // 残余残業予算 = 年間上限 − 20日締め(実績)合計。
+    // 月あたり配分 = 残業時間実績（20日締め実績合計）÷ 経過月数。
+    const cutoffActualSum = stats.cutoffActualSum;
     const remainingBudget = roundToTenth(state.annualCap - cutoffActualSum);
     const elapsedMonths = computeElapsedCutoffMonths(startYear, refDate);
-    const monthlyAllowance = elapsedMonths > 0 ? roundToTenth(remainingBudget / elapsedMonths) : 0;
+    const monthlyAllowance = elapsedMonths > 0 ? roundToTenth(cutoffActualSum / elapsedMonths) : 0;
     renderPace({
       annualCap: state.annualCap,
       cutoffActualSum,
       remainingBudget,
       elapsedMonths,
       monthlyAllowance,
+      dailyAvg: stats.dailyAvg,
+      projectedAnnual: stats.projectedAnnual,
     });
   }
 
@@ -1317,8 +1321,6 @@ export function createUI(options = {}) {
     grid.appendChild(card('年間休日数', `${s.offDays} 日`));
     grid.appendChild(card('経過営業日数', `${s.elapsedBiz} 日`));
     grid.appendChild(card('残りの営業日数', `${s.remainingBiz} 日`));
-    grid.appendChild(card('1日あたり残業平均', `${s.dailyAvg.toFixed(2)} 時間 / 営業日`));
-    grid.appendChild(card('このペースの年間予測', `${fmtHours(s.projectedAnnual)} 時間`));
     elMainStats.appendChild(grid);
   }
 
@@ -1409,6 +1411,10 @@ export function createUI(options = {}) {
         p.elapsedMonths > 0 ? `${fmtHours(p.monthlyAllowance)} 時間 / 月` : '—',
       ),
     );
+    dl.appendChild(el('dt', {}, '1日あたり残業平均'));
+    dl.appendChild(el('dd', {}, `${p.dailyAvg.toFixed(2)} 時間 / 営業日`));
+    dl.appendChild(el('dt', {}, 'このペースの年間予測'));
+    dl.appendChild(el('dd', {}, `${fmtHours(p.projectedAnnual)} 時間`));
     elPace.appendChild(dl);
 
     if (p.remainingBudget < 0) {
